@@ -8,10 +8,15 @@ import {
   Square,
   Undo2,
   Trash2,
+  Upload,
+  Sparkles,
+  Download,
+  X,
+  ImageIcon,
+  Loader2,
 } from "lucide-react";
 
 type Tool = "pen" | "highlighter" | "eraser" | "text" | "arrow" | "rect";
-
 type Point = { x: number; y: number };
 
 type Stroke =
@@ -19,21 +24,13 @@ type Stroke =
   | { id: string; type: "arrow" | "rect"; color: string; size: number; start: Point; end: Point }
   | { id: string; type: "text"; color: string; size: number; pos: Point; text: string };
 
+type RefImage = { id: string; name: string; dataUrl: string };
+
 const PALETTE = [
-  "#0a0a0a",
-  "#ffffff",
-  "#ef4444",
-  "#f59e0b",
-  "#eab308",
-  "#22c55e",
-  "#06b6d4",
-  "#3b82f6",
-  "#8b5cf6",
-  "#ec4899",
+  "#0a0a0a", "#ffffff", "#ef4444", "#f59e0b", "#eab308",
+  "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899",
 ];
-
 const SIZES = [2, 4, 8, 14, 22];
-
 const TOOLS: { id: Tool; label: string; Icon: typeof Pen }[] = [
   { id: "pen", label: "Pen", Icon: Pen },
   { id: "highlighter", label: "Highlighter", Icon: Highlighter },
@@ -43,13 +40,10 @@ const TOOLS: { id: Tool; label: string; Icon: typeof Pen }[] = [
   { id: "rect", label: "Rectangle", Icon: Square },
 ];
 
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
-}
+const uid = () => Math.random().toString(36).slice(2, 10);
 
 function distToSegment(p: Point, a: Point, b: Point) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
+  const dx = b.x - a.x, dy = b.y - a.y;
   const len2 = dx * dx + dy * dy;
   if (len2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
   let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
@@ -64,45 +58,95 @@ function strokeHit(s: Stroke, p: Point, r: number): boolean {
     }
     return s.points.some((pt) => Math.hypot(pt.x - p.x, pt.y - p.y) <= r + s.size / 2);
   }
-  if (s.type === "arrow") {
-    return distToSegment(p, s.start, s.end) <= r + s.size / 2;
-  }
+  if (s.type === "arrow") return distToSegment(p, s.start, s.end) <= r + s.size / 2;
   if (s.type === "rect") {
-    const x1 = Math.min(s.start.x, s.end.x);
-    const x2 = Math.max(s.start.x, s.end.x);
-    const y1 = Math.min(s.start.y, s.end.y);
-    const y2 = Math.max(s.start.y, s.end.y);
-    const onEdge =
-      (p.x >= x1 - r && p.x <= x2 + r && (Math.abs(p.y - y1) <= r || Math.abs(p.y - y2) <= r)) ||
+    const x1 = Math.min(s.start.x, s.end.x), x2 = Math.max(s.start.x, s.end.x);
+    const y1 = Math.min(s.start.y, s.end.y), y2 = Math.max(s.start.y, s.end.y);
+    return (p.x >= x1 - r && p.x <= x2 + r && (Math.abs(p.y - y1) <= r || Math.abs(p.y - y2) <= r)) ||
       (p.y >= y1 - r && p.y <= y2 + r && (Math.abs(p.x - x1) <= r || Math.abs(p.x - x2) <= r));
-    return onEdge;
   }
   if (s.type === "text") {
-    const w = s.text.length * s.size * 0.6;
-    const h = s.size * 1.2;
+    const w = s.text.length * s.size * 0.6, h = s.size * 1.2;
     return p.x >= s.pos.x - r && p.x <= s.pos.x + w + r && p.y >= s.pos.y - h - r && p.y <= s.pos.y + r;
   }
   return false;
 }
 
+async function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result as string);
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(file);
+  });
+}
+
+function loadImg(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const i = new Image();
+    i.crossOrigin = "anonymous";
+    i.onload = () => resolve(i);
+    i.onerror = reject;
+    i.src = src;
+  });
+}
+
 export function AnnotationCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [tool, setTool] = useState<Tool>("pen");
-  const [color, setColor] = useState<string>("#0a0a0a");
-  const [size, setSize] = useState<number>(4);
+  const [color, setColor] = useState("#ef4444");
+  const [size, setSize] = useState(4);
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [draft, setDraft] = useState<Stroke | null>(null);
   const [textInput, setTextInput] = useState<{ pos: Point; value: string } | null>(null);
   const drawingRef = useRef(false);
+
+  const [images, setImages] = useState<RefImage[]>([]);
+  const [baseId, setBaseId] = useState<string | null>(null);
+  const [baseImg, setBaseImg] = useState<HTMLImageElement | null>(null);
+
+  const [prompt, setPrompt] = useState("");
+  const [rendering, setRendering] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  const base = images.find((i) => i.id === baseId) ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!base) { setBaseImg(null); return; }
+    loadImg(base.dataUrl).then((img) => { if (!cancelled) setBaseImg(img); });
+    return () => { cancelled = true; };
+  }, [base]);
+
+  // Compute fitted rect for the base image (contain)
+  const fittedRect = useCallback(() => {
+    const wrap = wrapRef.current;
+    if (!wrap || !baseImg) return null;
+    const { width: cw, height: ch } = wrap.getBoundingClientRect();
+    const ir = baseImg.naturalWidth / baseImg.naturalHeight;
+    const cr = cw / ch;
+    let w = cw, h = ch;
+    if (ir > cr) { w = cw; h = cw / ir; } else { h = ch; w = ch * ir; }
+    return { x: (cw - w) / 2, y: (ch - h) / 2, w, h };
+  }, [baseImg]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const { width, height } = canvas;
+    const wrap = wrapRef.current!;
+    const { width, height } = wrap.getBoundingClientRect();
     ctx.clearRect(0, 0, width, height);
+
+    if (baseImg) {
+      const r = fittedRect();
+      if (r) ctx.drawImage(baseImg, r.x, r.y, r.w, r.h);
+    }
 
     const all = draft ? [...strokes, draft] : strokes;
     for (const s of all) {
@@ -116,7 +160,6 @@ export function AnnotationCanvas() {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.lineWidth = s.size;
-
       if (s.type === "pen" || s.type === "highlighter") {
         if (s.points.length < 2) {
           ctx.beginPath();
@@ -161,7 +204,7 @@ export function AnnotationCanvas() {
       }
       ctx.restore();
     }
-  }, [strokes, draft]);
+  }, [strokes, draft, baseImg, fittedRect]);
 
   useEffect(() => {
     const resize = () => {
@@ -183,9 +226,7 @@ export function AnnotationCanvas() {
     return () => window.removeEventListener("resize", resize);
   }, [draw]);
 
-  useEffect(() => {
-    draw();
-  }, [draw]);
+  useEffect(() => { draw(); }, [draw]);
 
   const getPoint = (e: React.PointerEvent): Point => {
     const rect = canvasRef.current!.getBoundingClientRect();
@@ -196,17 +237,8 @@ export function AnnotationCanvas() {
     if (textInput) return;
     (e.target as Element).setPointerCapture(e.pointerId);
     const p = getPoint(e);
-
-    if (tool === "text") {
-      setTextInput({ pos: p, value: "" });
-      return;
-    }
-    if (tool === "eraser") {
-      drawingRef.current = true;
-      eraseAt(p);
-      return;
-    }
-
+    if (tool === "text") { setTextInput({ pos: p, value: "" }); return; }
+    if (tool === "eraser") { drawingRef.current = true; eraseAt(p); return; }
     drawingRef.current = true;
     if (tool === "pen" || tool === "highlighter") {
       setDraft({ id: uid(), type: tool, color, size, points: [p] });
@@ -218,18 +250,11 @@ export function AnnotationCanvas() {
   const onPointerMove = (e: React.PointerEvent) => {
     if (!drawingRef.current) return;
     const p = getPoint(e);
-    if (tool === "eraser") {
-      eraseAt(p);
-      return;
-    }
+    if (tool === "eraser") { eraseAt(p); return; }
     setDraft((d) => {
       if (!d) return d;
-      if (d.type === "pen" || d.type === "highlighter") {
-        return { ...d, points: [...d.points, p] };
-      }
-      if (d.type === "arrow" || d.type === "rect") {
-        return { ...d, end: p };
-      }
+      if (d.type === "pen" || d.type === "highlighter") return { ...d, points: [...d.points, p] };
+      if (d.type === "arrow" || d.type === "rect") return { ...d, end: p };
       return d;
     });
   };
@@ -237,10 +262,7 @@ export function AnnotationCanvas() {
   const onPointerUp = () => {
     if (!drawingRef.current) return;
     drawingRef.current = false;
-    if (draft) {
-      setStrokes((s) => [...s, draft]);
-      setDraft(null);
-    }
+    if (draft) { setStrokes((s) => [...s, draft]); setDraft(null); }
   };
 
   const eraseAt = (p: Point) => {
@@ -251,17 +273,136 @@ export function AnnotationCanvas() {
   const commitText = () => {
     if (!textInput) return;
     const t = textInput.value.trim();
-    if (t) {
-      setStrokes((s) => [
-        ...s,
-        { id: uid(), type: "text", color, size, pos: textInput.pos, text: t },
-      ]);
-    }
+    if (t) setStrokes((s) => [...s, { id: uid(), type: "text", color, size, pos: textInput.pos, text: t }]);
     setTextInput(null);
   };
 
   const undo = () => setStrokes((s) => s.slice(0, -1));
   const clear = () => setStrokes([]);
+
+  const handleFiles = async (files: FileList | null) => {
+    if (!files) return;
+    const next: RefImage[] = [];
+    for (const f of Array.from(files)) {
+      if (!f.type.startsWith("image/")) continue;
+      const dataUrl = await fileToDataUrl(f);
+      next.push({ id: uid(), name: f.name, dataUrl });
+    }
+    setImages((prev) => {
+      const merged = [...prev, ...next];
+      if (!baseId && next[0]) setBaseId(next[0].id);
+      return merged;
+    });
+  };
+
+  const removeImage = (id: string) => {
+    setImages((prev) => prev.filter((i) => i.id !== id));
+    if (baseId === id) {
+      const remaining = images.filter((i) => i.id !== id);
+      setBaseId(remaining[0]?.id ?? null);
+    }
+  };
+
+  // Build the composite image (base + annotations) at the natural resolution of base
+  const buildComposite = async (): Promise<string> => {
+    if (!baseImg) {
+      // No base — flatten current canvas
+      const canvas = canvasRef.current!;
+      return canvas.toDataURL("image/png");
+    }
+    const r = fittedRect()!;
+    const off = document.createElement("canvas");
+    off.width = baseImg.naturalWidth;
+    off.height = baseImg.naturalHeight;
+    const ctx = off.getContext("2d")!;
+    ctx.drawImage(baseImg, 0, 0);
+    const sx = baseImg.naturalWidth / r.w;
+    const sy = baseImg.naturalHeight / r.h;
+    ctx.save();
+    ctx.translate(-r.x * sx, -r.y * sy);
+    ctx.scale(sx, sy);
+    // re-draw strokes
+    for (const s of strokes) {
+      ctx.save();
+      if (s.type === "highlighter") {
+        ctx.globalAlpha = 0.35;
+        ctx.globalCompositeOperation = "multiply";
+      }
+      ctx.strokeStyle = s.color;
+      ctx.fillStyle = s.color;
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.lineWidth = s.size;
+      if (s.type === "pen" || s.type === "highlighter") {
+        if (s.points.length < 2) {
+          ctx.beginPath();
+          ctx.arc(s.points[0].x, s.points[0].y, s.size / 2, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(s.points[0].x, s.points[0].y);
+          for (let i = 1; i < s.points.length - 1; i++) {
+            const mx = (s.points[i].x + s.points[i + 1].x) / 2;
+            const my = (s.points[i].y + s.points[i + 1].y) / 2;
+            ctx.quadraticCurveTo(s.points[i].x, s.points[i].y, mx, my);
+          }
+          const last = s.points[s.points.length - 1];
+          ctx.lineTo(last.x, last.y);
+          ctx.stroke();
+        }
+      } else if (s.type === "rect") {
+        const x = Math.min(s.start.x, s.end.x), y = Math.min(s.start.y, s.end.y);
+        const w = Math.abs(s.end.x - s.start.x), h = Math.abs(s.end.y - s.start.y);
+        ctx.strokeRect(x, y, w, h);
+      } else if (s.type === "arrow") {
+        ctx.beginPath();
+        ctx.moveTo(s.start.x, s.start.y);
+        ctx.lineTo(s.end.x, s.end.y);
+        ctx.stroke();
+        const angle = Math.atan2(s.end.y - s.start.y, s.end.x - s.start.x);
+        const head = Math.max(10, s.size * 3);
+        ctx.beginPath();
+        ctx.moveTo(s.end.x, s.end.y);
+        ctx.lineTo(s.end.x - head * Math.cos(angle - Math.PI / 6), s.end.y - head * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(s.end.x - head * Math.cos(angle + Math.PI / 6), s.end.y - head * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+      } else if (s.type === "text") {
+        ctx.font = `500 ${Math.max(12, s.size * 4)}px Inter, system-ui, sans-serif`;
+        ctx.textBaseline = "alphabetic";
+        ctx.fillText(s.text, s.pos.x, s.pos.y);
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+    return off.toDataURL("image/png");
+  };
+
+  const handleRender = async () => {
+    if (!base) { setRenderError("Upload at least one image first."); return; }
+    setRendering(true);
+    setRenderError(null);
+    setResult(null);
+    try {
+      const composite = await buildComposite();
+      const references = images.filter((i) => i.id !== baseId).map((i) => i.dataUrl);
+      const res = await fetch("/api/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: prompt || "Premium photorealistic re-render following the annotations.",
+          baseImage: composite,
+          references,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.image) throw new Error(data.error || "Render failed");
+      setResult(data.image);
+    } catch (e) {
+      setRenderError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRendering(false);
+    }
+  };
 
   return (
     <div className="flex h-screen w-screen flex-col bg-background text-foreground">
@@ -269,7 +410,7 @@ export function AnnotationCanvas() {
         <div className="flex items-center gap-3">
           <div className="h-2 w-2 rounded-full bg-accent" />
           <h1 className="text-sm font-semibold tracking-tight uppercase">Render Studio</h1>
-          <span className="text-xs text-muted-foreground font-mono">/ canvas</span>
+          <span className="text-xs text-muted-foreground font-mono">/ premium re-render</span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -290,6 +431,7 @@ export function AnnotationCanvas() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
+        {/* Tools */}
         <aside className="flex w-16 flex-col items-center gap-1 border-r border-border bg-surface py-4">
           {TOOLS.map(({ id, label, Icon }) => (
             <button
@@ -307,6 +449,69 @@ export function AnnotationCanvas() {
           ))}
         </aside>
 
+        {/* References panel */}
+        <aside className="flex w-64 flex-col border-r border-border bg-surface">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h2 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              Images
+            </h2>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-surface-elevated px-2 py-1 text-[11px] font-medium hover:border-accent hover:text-accent"
+            >
+              <Upload className="h-3 w-3" /> Upload
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }}
+            />
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {images.length === 0 && (
+              <div className="rounded-md border border-dashed border-border p-6 text-center text-[11px] text-muted-foreground">
+                <ImageIcon className="mx-auto mb-2 h-6 w-6 opacity-50" />
+                Upload one or more reference images. The first becomes the base scene.
+              </div>
+            )}
+            {images.map((img) => {
+              const isBase = img.id === baseId;
+              return (
+                <div
+                  key={img.id}
+                  className={`group relative overflow-hidden rounded-md border ${
+                    isBase ? "border-accent" : "border-border"
+                  }`}
+                >
+                  <img src={img.dataUrl} alt={img.name} className="block h-24 w-full object-cover" />
+                  <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-black/60 px-2 py-1 text-[10px]">
+                    <button
+                      onClick={() => setBaseId(img.id)}
+                      className={isBase ? "font-semibold text-accent" : "text-white/80 hover:text-white"}
+                    >
+                      {isBase ? "● BASE" : "Set as base"}
+                    </button>
+                    <button
+                      onClick={() => removeImage(img.id)}
+                      className="text-white/70 hover:text-destructive"
+                      title="Remove"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="border-t border-border p-3 text-[10px] text-muted-foreground">
+            <span className="font-semibold text-foreground">{images.length}</span> image{images.length === 1 ? "" : "s"} · base anchors the render, others act as style references.
+          </div>
+        </aside>
+
+        {/* Canvas */}
         <main className="relative flex-1 bg-canvas" ref={wrapRef}>
           <canvas
             ref={canvasRef}
@@ -319,6 +524,13 @@ export function AnnotationCanvas() {
             }`}
             style={{ touchAction: "none" }}
           />
+          {!base && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <div className="rounded-lg border border-dashed border-border/60 bg-background/60 px-6 py-4 text-center text-xs text-muted-foreground">
+                Upload an image to begin · multiple uploads supported
+              </div>
+            </div>
+          )}
           {textInput && (
             <input
               autoFocus
@@ -344,11 +556,10 @@ export function AnnotationCanvas() {
           )}
         </main>
 
-        <aside className="flex w-56 flex-col gap-6 border-l border-border bg-surface p-4">
+        {/* Right: tool settings + render */}
+        <aside className="flex w-72 flex-col gap-5 border-l border-border bg-surface p-4 overflow-y-auto">
           <section>
-            <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-              Color
-            </h2>
+            <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Color</h2>
             <div className="grid grid-cols-5 gap-1.5">
               {PALETTE.map((c) => (
                 <button
@@ -374,9 +585,7 @@ export function AnnotationCanvas() {
           </section>
 
           <section>
-            <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-              Size
-            </h2>
+            <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Size</h2>
             <div className="flex items-center justify-between">
               {SIZES.map((s) => (
                 <button
@@ -388,42 +597,87 @@ export function AnnotationCanvas() {
                 >
                   <span
                     className="block rounded-full"
-                    style={{
-                      width: Math.min(s, 18),
-                      height: Math.min(s, 18),
-                      backgroundColor: color,
-                    }}
+                    style={{ width: Math.min(s, 18), height: Math.min(s, 18), backgroundColor: color }}
                   />
                 </button>
               ))}
             </div>
             <input
-              type="range"
-              min={1}
-              max={40}
-              value={size}
+              type="range" min={1} max={40} value={size}
               onChange={(e) => setSize(Number(e.target.value))}
               className="mt-4 w-full accent-accent"
             />
             <div className="mt-1 font-mono text-xs text-muted-foreground">{size}px</div>
           </section>
 
-          <section className="mt-auto">
+          <section className="space-y-2">
+            <h2 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              Render prompt
+            </h2>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="Describe the premium re-render: materials, lighting, mood, what to change…"
+              rows={4}
+              className="w-full resize-none rounded-md border border-border bg-background/60 p-2 text-xs leading-relaxed outline-none focus:border-accent"
+            />
+            <button
+              onClick={handleRender}
+              disabled={rendering || !base}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold uppercase tracking-wider text-accent-foreground transition hover:opacity-90 disabled:opacity-40"
+            >
+              {rendering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+              {rendering ? "Rendering…" : "Render"}
+            </button>
+            {renderError && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-[11px] text-destructive">
+                {renderError}
+              </div>
+            )}
+          </section>
+
+          <section>
             <div className="rounded-md border border-border bg-background/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
               <div className="mb-1 font-semibold uppercase tracking-wider text-foreground">
                 {TOOLS.find((t) => t.id === tool)?.label}
               </div>
-              {tool === "eraser"
-                ? "Drag across strokes to remove them."
-                : tool === "text"
-                ? "Click anywhere to place text. Enter to commit."
-                : tool === "arrow" || tool === "rect"
-                ? "Click and drag to draw."
+              {tool === "eraser" ? "Drag across strokes to remove them."
+                : tool === "text" ? "Click anywhere to place text. Enter to commit."
+                : tool === "arrow" || tool === "rect" ? "Click and drag to draw."
                 : "Draw freely. Pen is opaque, highlighter is translucent."}
             </div>
           </section>
         </aside>
       </div>
+
+      {/* Result modal */}
+      {result && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" onClick={() => setResult(null)}>
+          <div className="relative max-h-full max-w-5xl overflow-hidden rounded-lg border border-border bg-surface" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-border px-4 py-2">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider">
+                <Sparkles className="h-3.5 w-3.5 text-accent" /> Rendered result
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={result}
+                  download="render.png"
+                  className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:border-accent hover:text-accent"
+                >
+                  <Download className="h-3 w-3" /> Download
+                </a>
+                <button
+                  onClick={() => setResult(null)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border hover:border-destructive hover:text-destructive"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+            <img src={result} alt="render" className="block max-h-[80vh] w-auto" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
