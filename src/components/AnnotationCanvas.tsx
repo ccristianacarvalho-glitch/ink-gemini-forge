@@ -14,7 +14,44 @@ import {
   X,
   ImageIcon,
   Loader2,
+  History,
+  Wand2,
+  RefreshCw,
 } from "lucide-react";
+
+type HistoryItem = {
+  id: string;
+  prompt: string;
+  style: string;
+  image: string;
+  createdAt: number;
+};
+
+const STYLES: { id: string; label: string; hint: string }[] = [
+  { id: "photorealistic", label: "Photorealistic", hint: "PBR · natural light · 8k detail" },
+  { id: "cinematic", label: "Cinematic", hint: "Dramatic light · film grain · anamorphic" },
+  { id: "architectural", label: "Architectural", hint: "GI · twilight · premium materials" },
+  { id: "interior", label: "Interior Design", hint: "Warm ambient · editorial styling" },
+  { id: "product", label: "Product Studio", hint: "Seamless bg · softbox · macro" },
+  { id: "editorial", label: "Editorial", hint: "Daylight · muted · Kinfolk / Aesop" },
+  { id: "concept", label: "Concept Art", hint: "Painterly · matte painting" },
+  { id: "sketch3d", label: "3D Presentation", hint: "Clean geometry · studio light" },
+];
+
+const PROMPT_CHIPS = [
+  "golden hour lighting",
+  "overcast soft daylight",
+  "twilight with warm interior glow",
+  "polished concrete + oak",
+  "brushed brass + travertine",
+  "linen and boucle textiles",
+  "shallow depth of field",
+  "shot on 35mm, f/1.8",
+  "minimal Scandinavian styling",
+  "Japandi mood",
+  "add tall greenery",
+  "remove clutter",
+];
 
 type Tool = "pen" | "highlighter" | "eraser" | "text" | "arrow" | "rect";
 type Point = { x: number; y: number };
@@ -109,9 +146,11 @@ export function AnnotationCanvas() {
   const [baseImg, setBaseImg] = useState<HTMLImageElement | null>(null);
 
   const [prompt, setPrompt] = useState("");
+  const [style, setStyle] = useState<string>("photorealistic");
   const [rendering, setRendering] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
   const base = images.find((i) => i.id === baseId) ?? null;
 
@@ -385,24 +424,45 @@ export function AnnotationCanvas() {
     try {
       const composite = await buildComposite();
       const references = images.filter((i) => i.id !== baseId).map((i) => i.dataUrl);
+      const effectivePrompt = prompt.trim() || "Premium re-render following the annotations.";
       const res = await fetch("/api/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: prompt || "Premium photorealistic re-render following the annotations.",
+          prompt: effectivePrompt,
+          style,
           baseImage: composite,
           references,
+          history: history.slice(-4).map((h) => ({
+            prompt: h.prompt,
+            style: h.style,
+            image: h.image,
+          })),
         }),
       });
       const data = await res.json();
       if (!res.ok || !data.image) throw new Error(data.error || "Render failed");
       setResult(data.image);
+      setHistory((h) => [
+        ...h,
+        { id: uid(), prompt: effectivePrompt, style, image: data.image, createdAt: Date.now() },
+      ]);
     } catch (e) {
       setRenderError(e instanceof Error ? e.message : String(e));
     } finally {
       setRendering(false);
     }
   };
+
+  const useRenderAsBase = async (dataUrl: string) => {
+    const img: RefImage = { id: uid(), name: `render-${Date.now()}.png`, dataUrl };
+    setImages((prev) => [img, ...prev]);
+    setBaseId(img.id);
+    setStrokes([]);
+    setResult(null);
+  };
+
+
 
   return (
     <div className="flex h-screen w-screen flex-col bg-background text-foreground">
@@ -612,29 +672,118 @@ export function AnnotationCanvas() {
 
           <section className="space-y-2">
             <h2 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-              Render prompt
+              Render style
             </h2>
+            <div className="grid grid-cols-2 gap-1.5">
+              {STYLES.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => setStyle(s.id)}
+                  title={s.hint}
+                  className={`rounded-md border px-2 py-1.5 text-left text-[11px] leading-tight transition ${
+                    style === s.id
+                      ? "border-accent bg-accent/10 text-foreground"
+                      : "border-border bg-background/40 text-muted-foreground hover:border-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <div className="font-semibold">{s.label}</div>
+                  <div className="mt-0.5 text-[9px] opacity-70">{s.hint}</div>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="space-y-2">
+            <div className="flex items-center justify-between">
+              <h2 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                Render prompt
+              </h2>
+              <Wand2 className="h-3 w-3 text-muted-foreground" />
+            </div>
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Describe the premium re-render: materials, lighting, mood, what to change…"
+              placeholder="Describe the re-render: materials, lighting, mood, what to change…"
               rows={4}
               className="w-full resize-none rounded-md border border-border bg-background/60 p-2 text-xs leading-relaxed outline-none focus:border-accent"
             />
+            <div className="flex flex-wrap gap-1">
+              {PROMPT_CHIPS.map((c) => (
+                <button
+                  key={c}
+                  onClick={() =>
+                    setPrompt((p) => (p.trim() ? `${p.trim()}, ${c}` : c))
+                  }
+                  className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground transition hover:border-accent hover:text-accent"
+                >
+                  + {c}
+                </button>
+              ))}
+            </div>
             <button
               onClick={handleRender}
               disabled={rendering || !base}
               className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold uppercase tracking-wider text-accent-foreground transition hover:opacity-90 disabled:opacity-40"
             >
               {rendering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-              {rendering ? "Rendering…" : "Render"}
+              {rendering ? "Rendering…" : history.length > 0 ? "Refine render" : "Render"}
             </button>
+            {history.length > 0 && (
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
+                The engine keeps context of your last {Math.min(history.length, 4)} render{history.length === 1 ? "" : "s"} — each new render learns from prior prompts and annotations.
+              </p>
+            )}
             {renderError && (
               <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-[11px] text-destructive">
                 {renderError}
               </div>
             )}
           </section>
+
+          {history.length > 0 && (
+            <section className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h2 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  <History className="mr-1 inline h-3 w-3" /> Versions
+                </h2>
+                <button
+                  onClick={() => setHistory([])}
+                  className="text-[10px] text-muted-foreground hover:text-destructive"
+                >
+                  clear
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {[...history].reverse().map((h, i) => (
+                  <div
+                    key={h.id}
+                    className="group relative overflow-hidden rounded-md border border-border"
+                  >
+                    <img src={h.image} alt={h.prompt} className="block h-20 w-full object-cover" />
+                    <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-black/60 px-1.5 py-0.5 text-[9px] font-mono text-white/80">
+                      <span>v{history.length - i}</span>
+                      <span className="truncate">{h.style}</span>
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 flex opacity-0 transition group-hover:opacity-100">
+                      <button
+                        onClick={() => setResult(h.image)}
+                        className="flex-1 bg-black/70 px-1 py-1 text-[9px] text-white hover:bg-black/90"
+                      >
+                        view
+                      </button>
+                      <button
+                        onClick={() => useRenderAsBase(h.image)}
+                        className="flex-1 bg-accent/80 px-1 py-1 text-[9px] font-semibold text-accent-foreground hover:bg-accent"
+                        title="Use as new base and continue iterating"
+                      >
+                        <RefreshCw className="mx-auto h-2.5 w-2.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           <section>
             <div className="rounded-md border border-border bg-background/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
