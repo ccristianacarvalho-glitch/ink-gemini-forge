@@ -416,15 +416,37 @@ export function AnnotationCanvas() {
     return off.toDataURL("image/png");
   };
 
+  // Textual summary of the annotations, sent as part of the prompt so
+  // the model treats every mark as an explicit instruction — not just pixels.
+  const buildAnnotationBrief = (): string => {
+    if (strokes.length === 0) return "";
+    const counts = { pen: 0, highlighter: 0, arrow: 0, rect: 0, text: 0 };
+    const texts: string[] = [];
+    for (const s of strokes) {
+      counts[s.type as keyof typeof counts]++;
+      if (s.type === "text") texts.push(`"${s.text}"`);
+    }
+    const parts: string[] = [];
+    if (counts.pen) parts.push(`${counts.pen} pen mark(s)`);
+    if (counts.highlighter) parts.push(`${counts.highlighter} highlight(s)`);
+    if (counts.arrow) parts.push(`${counts.arrow} arrow(s) pointing at areas to change`);
+    if (counts.rect) parts.push(`${counts.rect} rectangle(s) framing regions to modify`);
+    if (counts.text) parts.push(`${counts.text} written note(s): ${texts.join(", ")}`);
+    return `ANNOTATIONS ON THE IMAGE (treat as explicit instructions): ${parts.join("; ")}.`;
+  };
+
   const handleRender = async () => {
     if (!base) { setRenderError("Upload at least one image first."); return; }
     setRendering(true);
     setRenderError(null);
-    setResult(null);
     try {
       const composite = await buildComposite();
-      const references = images.filter((i) => i.id !== baseId).map((i) => i.dataUrl);
-      const effectivePrompt = prompt.trim() || "Premium re-render following the annotations.";
+      const references = images
+        .filter((i) => i.id !== baseId && !i.name.startsWith("render-"))
+        .map((i) => i.dataUrl);
+      const brief = buildAnnotationBrief();
+      const userPrompt = prompt.trim() || "Premium re-render following the annotations.";
+      const effectivePrompt = brief ? `${brief}\n\n${userPrompt}` : userPrompt;
       const res = await fetch("/api/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -442,7 +464,20 @@ export function AnnotationCanvas() {
       });
       const data = await res.json();
       if (!res.ok || !data.image) throw new Error(data.error || "Render failed");
-      setResult(data.image);
+
+      // Replace the base image in-place with the newly generated render.
+      // Annotations reset, so the next strokes modify the fresh render.
+      const newImg: RefImage = {
+        id: uid(),
+        name: `render-${Date.now()}.png`,
+        dataUrl: data.image,
+      };
+      setImages((prev) => {
+        const withoutBase = baseId ? prev.filter((i) => i.id !== baseId) : prev;
+        return [newImg, ...withoutBase];
+      });
+      setBaseId(newImg.id);
+      setStrokes([]);
       setHistory((h) => [
         ...h,
         { id: uid(), prompt: effectivePrompt, style, image: data.image, createdAt: Date.now() },
