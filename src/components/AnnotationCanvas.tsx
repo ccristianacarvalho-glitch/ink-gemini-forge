@@ -424,24 +424,45 @@ export function AnnotationCanvas() {
     try {
       const composite = await buildComposite();
       const references = images.filter((i) => i.id !== baseId).map((i) => i.dataUrl);
+      const effectivePrompt = prompt.trim() || "Premium re-render following the annotations.";
       const res = await fetch("/api/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: prompt || "Premium photorealistic re-render following the annotations.",
+          prompt: effectivePrompt,
+          style,
           baseImage: composite,
           references,
+          history: history.slice(-4).map((h) => ({
+            prompt: h.prompt,
+            style: h.style,
+            image: h.image,
+          })),
         }),
       });
       const data = await res.json();
       if (!res.ok || !data.image) throw new Error(data.error || "Render failed");
       setResult(data.image);
+      setHistory((h) => [
+        ...h,
+        { id: uid(), prompt: effectivePrompt, style, image: data.image, createdAt: Date.now() },
+      ]);
     } catch (e) {
       setRenderError(e instanceof Error ? e.message : String(e));
     } finally {
       setRendering(false);
     }
   };
+
+  const useRenderAsBase = async (dataUrl: string) => {
+    const img: RefImage = { id: uid(), name: `render-${Date.now()}.png`, dataUrl };
+    setImages((prev) => [img, ...prev]);
+    setBaseId(img.id);
+    setStrokes([]);
+    setResult(null);
+  };
+
+
 
   return (
     <div className="flex h-screen w-screen flex-col bg-background text-foreground">
