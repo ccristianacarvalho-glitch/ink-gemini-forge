@@ -14,7 +14,44 @@ import {
   X,
   ImageIcon,
   Loader2,
+  History,
+  Wand2,
+  RefreshCw,
 } from "lucide-react";
+
+type HistoryItem = {
+  id: string;
+  prompt: string;
+  style: string;
+  image: string;
+  createdAt: number;
+};
+
+const STYLES: { id: string; label: string; hint: string }[] = [
+  { id: "photorealistic", label: "Photorealistic", hint: "PBR · natural light · 8k detail" },
+  { id: "cinematic", label: "Cinematic", hint: "Dramatic light · film grain · anamorphic" },
+  { id: "architectural", label: "Architectural", hint: "GI · twilight · premium materials" },
+  { id: "interior", label: "Interior Design", hint: "Warm ambient · editorial styling" },
+  { id: "product", label: "Product Studio", hint: "Seamless bg · softbox · macro" },
+  { id: "editorial", label: "Editorial", hint: "Daylight · muted · Kinfolk / Aesop" },
+  { id: "concept", label: "Concept Art", hint: "Painterly · matte painting" },
+  { id: "sketch3d", label: "3D Presentation", hint: "Clean geometry · studio light" },
+];
+
+const PROMPT_CHIPS = [
+  "golden hour lighting",
+  "overcast soft daylight",
+  "twilight with warm interior glow",
+  "polished concrete + oak",
+  "brushed brass + travertine",
+  "linen and boucle textiles",
+  "shallow depth of field",
+  "shot on 35mm, f/1.8",
+  "minimal Scandinavian styling",
+  "Japandi mood",
+  "add tall greenery",
+  "remove clutter",
+];
 
 type Tool = "pen" | "highlighter" | "eraser" | "text" | "arrow" | "rect";
 type Point = { x: number; y: number };
