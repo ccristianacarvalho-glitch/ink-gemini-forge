@@ -2,12 +2,16 @@ import { createFileRoute } from "@tanstack/react-router";
 
 type HistoryTurn = {
   prompt?: string;
+  instructions?: string;
   style?: string;
   image?: string; // previous rendered image (data URL)
 };
 
 type RenderBody = {
   prompt: string;
+  instructions?: string;
+  annotationBrief?: string;
+  fullPrompt?: string;
   style?: string;
   baseImage: string; // data URL of base + overlay composite
   references?: string[]; // additional data URLs
@@ -49,7 +53,16 @@ export const Route = createFileRoute("/api/render")({
           return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
 
-        const { prompt, style, baseImage, references = [], history = [] } = body;
+        const {
+          prompt,
+          instructions: userInstructions = "",
+          annotationBrief = "",
+          fullPrompt = "",
+          style,
+          baseImage,
+          references = [],
+          history = [],
+        } = body;
         if (!prompt || !baseImage) {
           return Response.json({ error: "prompt and baseImage are required" }, { status: 400 });
         }
@@ -60,32 +73,41 @@ export const Route = createFileRoute("/api/render")({
         const historyText =
           history.length > 0
             ? "\n\nITERATION CONTEXT — previous turns in this session (in order). " +
-              "Learn from what the user has been asking, keep consistency of subject, materials and mood, and refine further:\n" +
+              "Learn from what the user has been asking, keep consistency of subject, materials and mood, " +
+              "notice recurring instructions and preferences, and refine further:\n" +
               history
                 .map(
                   (h, i) =>
-                    `#${i + 1} style=${h.style ?? "-"} · prompt="${(h.prompt ?? "").slice(0, 400)}"`,
+                    `#${i + 1} style=${h.style ?? "-"} · prompt="${(h.prompt ?? "").slice(0, 300)}"` +
+                    (h.instructions ? ` · instructions="${h.instructions.slice(0, 300)}"` : ""),
                 )
                 .join("\n")
             : "";
 
-        const instructions =
+        const systemBlock =
           `You are a premium architectural, interior and product visualization renderer. ` +
           `The FIRST image is the CURRENT base scene WITH the user's annotations drawn on top ` +
-          `(pen lines, arrows, highlights, text, rectangles). Treat every annotation as a precise instruction ` +
-          `about what to change, add, remove, emphasize or replace in that exact spot. ` +
+          `(pen lines, arrows, highlights, text, rectangles). Every annotation is a precise spatial instruction: ` +
+          `it marks WHERE to change something. The USER INSTRUCTIONS text below describes HOW to change it. ` +
+          `Combine them — an arrow, highlight, pen mark or rectangle points at the exact region the instructions refer to. ` +
           `Any images that follow are STYLE & CONTENT REFERENCES (materials, lighting, mood, objects, palette). ` +
           `Any PREVIOUS RENDER images included are prior iterations by the same user — preserve their intent ` +
           `and progressively refine, do not restart from scratch. ` +
           `Produce ONE single photorealistic, premium-quality re-render of the base scene that follows the annotations, ` +
-          `the references and the prior iterations. Preserve the original composition, perspective and framing ` +
-          `unless annotations explicitly instruct otherwise. Remove any visible annotation marks from the final image.` +
+          `the user instructions, the references and the prior iterations. Preserve the original composition, ` +
+          `perspective and framing unless instructions explicitly say otherwise. ` +
+          `Remove any visible annotation marks from the final image.` +
           (styleText ? `\n\nSTYLE DIRECTIVE: ${styleText}` : "") +
           historyText +
-          `\n\nUSER PROMPT: ${prompt}`;
+          (annotationBrief ? `\n\n${annotationBrief}` : "") +
+          (userInstructions
+            ? `\n\nUSER INSTRUCTIONS (HOW to apply the annotations):\n${userInstructions}`
+            : "") +
+          `\n\nUSER PROMPT: ${prompt}` +
+          (fullPrompt && fullPrompt !== prompt ? `\n\nCOMBINED CONTEXT:\n${fullPrompt}` : "");
 
         const content: Array<Record<string, unknown>> = [
-          { type: "text", text: instructions },
+          { type: "text", text: systemBlock },
           { type: "image_url", image_url: { url: baseImage } },
           ...references.map((url) => ({ type: "image_url", image_url: { url } })),
           ...history
