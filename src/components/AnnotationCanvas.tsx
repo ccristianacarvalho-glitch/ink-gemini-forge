@@ -478,17 +478,30 @@ export function AnnotationCanvas() {
         .map((i) => i.dataUrl);
       const brief = buildAnnotationBrief();
       const userPrompt = prompt.trim() || "Premium re-render following the annotations.";
-      const effectivePrompt = brief ? `${brief}\n\n${userPrompt}` : userPrompt;
+      const userInstructions = instructions.trim();
+      const effectivePrompt = [
+        brief,
+        userInstructions
+          ? `USER INSTRUCTIONS (apply these together with the annotations — annotations mark WHERE, instructions describe HOW):\n${userInstructions}`
+          : "",
+        userPrompt,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
       const res = await fetch("/api/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: effectivePrompt,
+          prompt: userPrompt,
+          instructions: userInstructions,
+          annotationBrief: brief,
+          fullPrompt: effectivePrompt,
           style,
           baseImage: composite,
           references,
           history: history.slice(-4).map((h) => ({
             prompt: h.prompt,
+            instructions: h.instructions,
             style: h.style,
             image: h.image,
           })),
@@ -512,7 +525,14 @@ export function AnnotationCanvas() {
       setStrokes([]);
       setHistory((h) => [
         ...h,
-        { id: uid(), prompt: effectivePrompt, style, image: data.image, createdAt: Date.now() },
+        {
+          id: uid(),
+          prompt: userPrompt,
+          instructions: userInstructions,
+          style,
+          image: data.image,
+          createdAt: Date.now(),
+        },
       ]);
     } catch (e) {
       setRenderError(e instanceof Error ? e.message : String(e));
