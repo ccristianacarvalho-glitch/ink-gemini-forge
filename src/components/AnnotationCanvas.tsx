@@ -22,6 +22,7 @@ import {
 type HistoryItem = {
   id: string;
   prompt: string;
+  instructions: string;
   style: string;
   image: string;
   createdAt: number;
