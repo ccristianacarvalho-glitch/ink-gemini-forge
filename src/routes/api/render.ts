@@ -2,12 +2,16 @@ import { createFileRoute } from "@tanstack/react-router";
 
 type HistoryTurn = {
   prompt?: string;
+  instructions?: string;
   style?: string;
   image?: string; // previous rendered image (data URL)
 };
 
 type RenderBody = {
   prompt: string;
+  instructions?: string;
+  annotationBrief?: string;
+  fullPrompt?: string;
   style?: string;
   baseImage: string; // data URL of base + overlay composite
   references?: string[]; // additional data URLs
