@@ -86,18 +86,31 @@ export const Route = createFileRoute("/api/render")({
 
         const systemBlock =
           `You are a premium architectural, interior and product visualization renderer. ` +
-          `The FIRST image is the CURRENT base scene WITH the user's annotations drawn on top ` +
-          `(pen lines, arrows, highlights, text, rectangles). Every annotation is a precise spatial instruction: ` +
-          `it marks WHERE to change something. The USER INSTRUCTIONS text below describes HOW to change it. ` +
-          `Combine them — an arrow, highlight, pen mark or rectangle points at the exact region the instructions refer to. ` +
-          `Any images that follow are STYLE & CONTENT REFERENCES (materials, lighting, mood, objects, palette). ` +
-          `Any PREVIOUS RENDER images included are prior iterations by the same user — preserve their intent ` +
-          `and progressively refine, do not restart from scratch. ` +
-          `Produce ONE single photorealistic, premium-quality re-render of the base scene that follows the annotations, ` +
-          `the user instructions, the references and the prior iterations. Preserve the original composition, ` +
-          `perspective and framing unless instructions explicitly say otherwise. ` +
-          `Remove any visible annotation marks from the final image.` +
-          (styleText ? `\n\nSTYLE DIRECTIVE: ${styleText}` : "") +
+          `\n\n=== ABSOLUTE GEOMETRY LOCK (HIGHEST PRIORITY) ===\n` +
+          `The FIRST image is the CURRENT base scene. Its GEOMETRY IS IMMUTABLE. ` +
+          `You MUST preserve, pixel-accurately, the exact:\n` +
+          `- camera position, focal length, perspective, vanishing points and framing\n` +
+          `- silhouettes, contours, edges and proportions of every object, wall, window, opening and structural element\n` +
+          `- position, scale and alignment of every element already present\n` +
+          `- horizon line, floor plane and wall planes\n` +
+          `Treat the base image as a STRICT structural reference, as if you were doing an img2img pass with very low denoise on shape. ` +
+          `DO NOT invent, move, resize, rotate, add or remove architectural or product geometry. ` +
+          `DO NOT redesign the space. DO NOT change the layout. DO NOT alter proportions. ` +
+          `You may ONLY change: materials, textures, colors, lighting, atmosphere, small styling props explicitly requested, ` +
+          `and the specific regions the user annotated — and even there, only within the annotated area and only what the instructions ask for.\n\n` +
+          `=== ANNOTATIONS (WHERE) ===\n` +
+          `The base image includes the user's annotations drawn on top (pen lines, arrows, highlights, text, rectangles). ` +
+          `Each annotation marks WHERE to apply a change. Outside annotated regions, the image must remain geometrically identical to the base. ` +
+          `Remove the visible annotation marks from the final output.\n\n` +
+          `=== USER INSTRUCTIONS (HOW) ===\n` +
+          `The user instructions describe HOW to modify the annotated regions. Apply them only to those regions, respecting the geometry lock.\n\n` +
+          `=== REFERENCES ===\n` +
+          `Any images after the first are STYLE references only (materials, lighting, mood, palette). ` +
+          `NEVER copy their geometry, composition or layout into the output. Only borrow materials/lighting/mood. ` +
+          `Any PREVIOUS RENDER images are prior iterations — keep their intent and continue refining, but the base image geometry still wins.\n\n` +
+          `Output ONE single photorealistic, premium re-render that is geometrically identical to the base scene, ` +
+          `with only the requested material/lighting/annotated changes applied.` +
+          (styleText ? `\n\nSTYLE DIRECTIVE (materials/lighting/mood only, NOT geometry): ${styleText}` : "") +
           historyText +
           (annotationBrief ? `\n\n${annotationBrief}` : "") +
           (userInstructions
@@ -105,6 +118,7 @@ export const Route = createFileRoute("/api/render")({
             : "") +
           `\n\nUSER PROMPT: ${prompt}` +
           (fullPrompt && fullPrompt !== prompt ? `\n\nCOMBINED CONTEXT:\n${fullPrompt}` : "");
+
 
         const content: Array<Record<string, unknown>> = [
           { type: "text", text: systemBlock },
