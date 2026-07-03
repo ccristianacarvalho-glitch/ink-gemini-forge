@@ -107,7 +107,7 @@ export const Route = createFileRoute("/api/render")({
           (fullPrompt && fullPrompt !== prompt ? `\n\nCOMBINED CONTEXT:\n${fullPrompt}` : "");
 
         const content: Array<Record<string, unknown>> = [
-          { type: "text", text: instructions },
+          { type: "text", text: systemBlock },
           { type: "image_url", image_url: { url: baseImage } },
           ...references.map((url) => ({ type: "image_url", image_url: { url } })),
           ...history
