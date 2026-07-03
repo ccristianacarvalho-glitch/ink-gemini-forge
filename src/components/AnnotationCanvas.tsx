@@ -147,6 +147,7 @@ export function AnnotationCanvas() {
   const [baseImg, setBaseImg] = useState<HTMLImageElement | null>(null);
 
   const [prompt, setPrompt] = useState("");
+  const [instructions, setInstructions] = useState("");
   const [style, setStyle] = useState<string>("photorealistic");
   const [rendering, setRendering] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
