@@ -418,23 +418,53 @@ export function AnnotationCanvas() {
     return off.toDataURL("image/png");
   };
 
-  // Textual summary of the annotations, sent as part of the prompt so
-  // the model treats every mark as an explicit instruction — not just pixels.
+  // Textual + spatial summary of the annotations. We convert every mark's
+  // bounding box to normalized coordinates relative to the base image so the
+  // model knows WHERE on the image each instruction applies.
   const buildAnnotationBrief = (): string => {
     if (strokes.length === 0) return "";
-    const counts = { pen: 0, highlighter: 0, arrow: 0, rect: 0, text: 0 };
-    const texts: string[] = [];
-    for (const s of strokes) {
-      counts[s.type as keyof typeof counts]++;
-      if (s.type === "text") texts.push(`"${s.text}"`);
-    }
-    const parts: string[] = [];
-    if (counts.pen) parts.push(`${counts.pen} pen mark(s)`);
-    if (counts.highlighter) parts.push(`${counts.highlighter} highlight(s)`);
-    if (counts.arrow) parts.push(`${counts.arrow} arrow(s) pointing at areas to change`);
-    if (counts.rect) parts.push(`${counts.rect} rectangle(s) framing regions to modify`);
-    if (counts.text) parts.push(`${counts.text} written note(s): ${texts.join(", ")}`);
-    return `ANNOTATIONS ON THE IMAGE (treat as explicit instructions): ${parts.join("; ")}.`;
+    const r = fittedRect();
+    const region = (x: number, y: number, w: number, h: number) => {
+      if (!r) return "";
+      const nx = (x - r.x) / r.w;
+      const ny = (y - r.y) / r.h;
+      const nw = w / r.w;
+      const nh = h / r.h;
+      const cx = nx + nw / 2;
+      const cy = ny + nh / 2;
+      const col = cx < 0.34 ? "left" : cx < 0.67 ? "center" : "right";
+      const row = cy < 0.34 ? "top" : cy < 0.67 ? "middle" : "bottom";
+      return `${row}-${col} @ x:${(nx * 100).toFixed(0)}%-${((nx + nw) * 100).toFixed(0)}% y:${(ny * 100).toFixed(0)}%-${((ny + nh) * 100).toFixed(0)}%`;
+    };
+    const bboxOfPoints = (pts: Point[]) => {
+      const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+      const x1 = Math.min(...xs), x2 = Math.max(...xs);
+      const y1 = Math.min(...ys), y2 = Math.max(...ys);
+      return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+    };
+    const lines: string[] = [];
+    strokes.forEach((s, i) => {
+      let box: { x: number; y: number; w: number; h: number } | null = null;
+      let label = s.type as string;
+      let extra = "";
+      if (s.type === "pen" || s.type === "highlighter") {
+        box = bboxOfPoints(s.points);
+        label = s.type === "pen" ? "pen mark" : "highlight";
+      } else if (s.type === "arrow") {
+        box = bboxOfPoints([s.start, s.end]);
+        label = "arrow pointing at target";
+      } else if (s.type === "rect") {
+        box = bboxOfPoints([s.start, s.end]);
+        label = "rectangle framing area to modify";
+      } else if (s.type === "text") {
+        const w = s.text.length * s.size * 0.6, h = s.size * 1.2;
+        box = { x: s.pos.x, y: s.pos.y - h, w, h };
+        label = "written note";
+        extra = ` — text: "${s.text}"`;
+      }
+      if (box) lines.push(`  #${i + 1} ${label} [${s.color}] at ${region(box.x, box.y, box.w, box.h)}${extra}`);
+    });
+    return `ANNOTATIONS ON THE IMAGE (treat each as an explicit instruction that refers to the marked region):\n${lines.join("\n")}`;
   };
 
   const handleRender = async () => {
