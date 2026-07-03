@@ -807,6 +807,26 @@ export function AnnotationCanvas() {
                 </button>
               ))}
             </div>
+            <div className="pt-1">
+              <div className="mb-1 flex items-center justify-between">
+                <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  Annotation instructions
+                </h3>
+                <span className="text-[9px] font-mono text-muted-foreground">
+                  {strokes.length} mark{strokes.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              <textarea
+                value={instructions}
+                onChange={(e) => setInstructions(e.target.value)}
+                placeholder="How to interpret your marks. e.g. 'replace the highlighted sofa with a boucle one', 'the arrow points to the wall — change it to travertine', 'inside the rectangle add a large window'."
+                rows={3}
+                className="w-full resize-none rounded-md border border-border bg-background/60 p-2 text-[11px] leading-relaxed outline-none focus:border-accent"
+              />
+              <p className="mt-1 text-[9px] leading-relaxed text-muted-foreground">
+                Each mark's position is sent as WHERE — these instructions are HOW. The engine learns from every iteration.
+              </p>
+            </div>
             <button
               onClick={handleRender}
               disabled={rendering || !base}
