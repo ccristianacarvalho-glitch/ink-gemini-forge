@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { GoogleGenAI } from "@google/genai";
 
 type HistoryTurn = {
   prompt?: string;
@@ -37,13 +38,29 @@ const STYLE_GUIDE: Record<string, string> = {
     "Semi-realistic 3D visualization, clean geometry, soft studio lighting, subtle materials, presentation quality.",
 };
 
+/**
+ * Auxiliar para converter uma Data URL (base64) no formato esperado pelo SDK oficial do Gemini.
+ */
+function parseDataUrl(dataUrl: string) {
+  const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!matches) {
+    throw new Error("Invalid Data URL format");
+  }
+  return {
+    inlineData: {
+      mimeType: matches[1],
+      data: matches[2],
+    },
+  };
+}
+
 export const Route = createFileRoute("/api/render")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const key = process.env.LOVABLE_API_KEY;
-        if (!key) {
-          return Response.json({ error: "Missing LOVABLE_API_KEY" }, { status: 500 });
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) {
+          return Response.json({ error: "Missing GEMINI_API_KEY" }, { status: 500 });
         }
 
         let body: RenderBody;
@@ -63,6 +80,7 @@ export const Route = createFileRoute("/api/render")({
           references = [],
           history = [],
         } = body;
+
         if (!prompt || !baseImage) {
           return Response.json({ error: "prompt and baseImage are required" }, { status: 400 });
         }
@@ -115,7 +133,6 @@ export const Route = createFileRoute("/api/render")({
           `Output ONE single photorealistic, premium re-render: same geometry as the base, ` +
           `maximum render quality, with the requested material / lighting / annotated changes applied.` +
           (styleText ? `\n\nSTYLE DIRECTIVE (materials/lighting/mood, NOT geometry): ${styleText}` : "") +
-
           historyText +
           (annotationBrief ? `\n\n${annotationBrief}` : "") +
           (userInstructions
@@ -124,57 +141,56 @@ export const Route = createFileRoute("/api/render")({
           `\n\nUSER PROMPT: ${prompt}` +
           (fullPrompt && fullPrompt !== prompt ? `\n\nCOMBINED CONTEXT:\n${fullPrompt}` : "");
 
+        try {
+          const ai = new GoogleGenAI({ apiKey });
 
-        const content: Array<Record<string, unknown>> = [
-          { type: "text", text: systemBlock },
-          { type: "image_url", image_url: { url: baseImage } },
-          ...references.map((url) => ({ type: "image_url", image_url: { url } })),
-          ...history
+          // Construção da lista híbrida de conteúdos (Textos e Objetos inlineData de imagem)
+          const contents: any[] = [systemBlock];
+
+          // 1. Imagem Base (Obrigatória)
+          contents.push(parseDataUrl(baseImage));
+
+          // 2. Imagens de Referência
+          for (const url of references) {
+            contents.push(parseDataUrl(url));
+          }
+
+          // 3. Histórico de Imagens Prévias (Máximo 3)
+          const activeHistoryImages = history
             .filter((h) => h.image)
-            .slice(-3) // cap to last 3 prior renders for token budget
-            .map((h) => ({ type: "image_url", image_url: { url: h.image! } })),
-        ];
+            .slice(-3);
 
-        const upstream = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "google/gemini-2.5-flash-image-preview",
-            messages: [{ role: "user", content }],
-            modalities: ["image", "text"],
-          }),
-        });
+          for (const h of activeHistoryImages) {
+            contents.push(parseDataUrl(h.image!));
+          }
 
-        if (!upstream.ok) {
-          const text = await upstream.text();
+          // Chamada oficial à API do Gemini configurada para output multimodal
+          const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: contents,
+            config: {
+              // Solicita explicitamente o retorno em formato de imagem
+              responseMimeType: "image/jpeg",
+            }
+          });
+
+          // O SDK disponibiliza os arquivos gerados através de metadados ou candidatos candidatos do bloco
+          const candidate = response.candidates?.[0];
+          const part = candidate?.content?.parts?.[0];
+
+          // Verifica se o modelo retornou dados inline de imagem
+          if (part && "inlineData" in part && part.inlineData?.data) {
+            const mimeType = part.inlineData.mimeType || "image/jpeg";
+            const base64Data = part.inlineData.data;
+            const generatedImageUrl = `data:${mimeType};base64,${base64Data}`;
+            
+            return Response.json({ image: generatedImageUrl });
+          }
+
           return Response.json(
-            { error: `Gateway error ${upstream.status}: ${text.slice(0, 500)}` },
-            { status: upstream.status },
+            { error: "No image returned from the Gemini model", raw: response },
+            { status: 502 }
           );
-        }
 
-        const data = (await upstream.json()) as {
-          choices?: Array<{
-            message?: {
-              images?: Array<{ image_url?: { url?: string } }>;
-              content?: string;
-            };
-          }>;
-        };
-
-        const image = data.choices?.[0]?.message?.images?.[0]?.image_url?.url;
-        if (!image) {
+        } catch (error: any) {
           return Response.json(
-            { error: "No image returned from model", raw: data },
-            { status: 502 },
-          );
-        }
-
-        return Response.json({ image });
-      },
-    },
-  },
-});
