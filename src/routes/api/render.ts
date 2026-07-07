@@ -59,8 +59,6 @@ const MAX_HISTORY_IMAGES = 4;
 const SUPPORTED_IMAGE_MODELS = new Set([
   "gemini-3.1-flash-lite-image",
   "gemini-3.1-flash-image",
-  "gemini-3-pro-image",
-  "gemini-2.5-flash-image",
 ]);
 
 const resolveModel = (): string => {
