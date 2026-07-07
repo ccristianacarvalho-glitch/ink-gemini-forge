@@ -18,58 +18,10 @@ type RenderBody = {
   history?: HistoryTurn[];
 };
 
-type GeminiImageInput = {
-  type: "image";
-  mime_type: string;
-  data: string;
-};
-
-type GeminiTextInput = {
-  type: "text";
-  text: string;
-};
-
-type GeminiInput = GeminiTextInput | GeminiImageInput;
-
-type GeminiResponse = {
-  output_image?: {
-    mime_type?: string;
-    data?: string;
-  };
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{
-        text?: string;
-        inlineData?: {
-          mimeType?: string;
-          data?: string;
-        };
-      }>;
-    };
-  }>;
-  error?: {
-    message?: string;
-  };
-};
-
-const GEMINI_INTERACTIONS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions";
-const DEFAULT_MODEL = "gemini-3.1-flash-lite-image";
+const GATEWAY_URL = "https://ai.gateway.lovable.dev/v1/chat/completions";
+const DEFAULT_MODEL = "google/gemini-3-pro-image";
 const MAX_REFERENCE_IMAGES = 6;
 const MAX_HISTORY_IMAGES = 4;
-const SUPPORTED_IMAGE_MODELS = new Set([
-  "gemini-3.1-flash-lite-image",
-  "gemini-3.1-flash-image",
-]);
-
-const resolveModel = (): string => {
-  const configuredModel = process.env.GEMINI_MODEL?.trim();
-
-  if (configuredModel && SUPPORTED_IMAGE_MODELS.has(configuredModel)) {
-    return configuredModel;
-  }
-
-  return DEFAULT_MODEL;
-};
 
 const STYLE_GUIDE: Record<string, string> = {
   photorealistic:
@@ -99,20 +51,6 @@ const responseJson = (body: unknown, init?: ResponseInit): Response =>
     },
   });
 
-const parseDataUrl = (dataUrl: string): GeminiImageInput => {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-
-  if (!match) {
-    throw new Error("Invalid image data URL. Expected data:<mime>;base64,<data>.");
-  }
-
-  return {
-    type: "image",
-    mime_type: match[1],
-    data: match[2],
-  };
-};
-
 const readRenderBody = async (request: Request): Promise<RenderBody> => {
   try {
     return (await request.json()) as RenderBody;
@@ -121,20 +59,12 @@ const readRenderBody = async (request: Request): Promise<RenderBody> => {
   }
 };
 
-const buildPrompt = (body: RenderBody): string => {
-  const {
-    prompt,
-    instructions = "",
-    annotationBrief = "",
-    fullPrompt = "",
-    style,
-    history = [],
-  } = body;
+const buildPromptText = (body: RenderBody): string => {
+  const { prompt, instructions = "", annotationBrief = "", fullPrompt = "", style, history = [] } = body;
   const styleText = style && STYLE_GUIDE[style] ? STYLE_GUIDE[style] : "";
   const historyText =
     history.length > 0
-      ? "\n\nITERATION CONTEXT - previous turns in this session, in order. " +
-        "Learn from recurring preferences, preserve subject continuity, and keep refining:\n" +
+      ? "\n\nITERATION CONTEXT - previous turns in this session, in order. Learn from recurring preferences, preserve subject continuity, and keep refining:\n" +
         history
           .slice(-MAX_HISTORY_IMAGES)
           .map(
@@ -166,67 +96,71 @@ const buildPrompt = (body: RenderBody): string => {
   );
 };
 
-const buildGeminiInput = (body: RenderBody): GeminiInput[] => {
-  const input: GeminiInput[] = [
-    { type: "text", text: buildPrompt(body) },
-    parseDataUrl(body.baseImage),
+type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+const buildContent = (body: RenderBody): ContentPart[] => {
+  const parts: ContentPart[] = [
+    { type: "text", text: buildPromptText(body) },
+    { type: "image_url", image_url: { url: body.baseImage } },
   ];
-
-  for (const reference of (body.references ?? []).slice(0, MAX_REFERENCE_IMAGES)) {
-    input.push(parseDataUrl(reference));
+  for (const ref of (body.references ?? []).slice(0, MAX_REFERENCE_IMAGES)) {
+    parts.push({ type: "image_url", image_url: { url: ref } });
   }
-
   for (const turn of (body.history ?? []).slice(-MAX_HISTORY_IMAGES)) {
-    if (turn.image) {
-      input.push(parseDataUrl(turn.image));
-    }
+    if (turn.image) parts.push({ type: "image_url", image_url: { url: turn.image } });
   }
-
-  return input;
+  return parts;
 };
 
-const extractGeneratedImage = (data: GeminiResponse): string | null => {
-  if (data.output_image?.data) {
-    return `data:${data.output_image.mime_type ?? "image/png"};base64,${data.output_image.data}`;
-  }
-
-  for (const candidate of data.candidates ?? []) {
-    for (const part of candidate.content?.parts ?? []) {
-      if (part.inlineData?.mimeType && part.inlineData.data) {
-        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-      }
-    }
-  }
-
+const extractImage = (data: unknown): string | null => {
+  const d = data as {
+    choices?: Array<{
+      message?: {
+        images?: Array<{ image_url?: { url?: string } }>;
+        content?: unknown;
+      };
+    }>;
+  };
+  const msg = d.choices?.[0]?.message;
+  const url = msg?.images?.[0]?.image_url?.url;
+  if (typeof url === "string" && url.startsWith("data:")) return url;
   return null;
 };
 
 const generateRender = async (body: RenderBody, apiKey: string): Promise<string> => {
-  const model = resolveModel();
-  const response = await fetch(GEMINI_INTERACTIONS_ENDPOINT, {
+  const model = process.env.LOVABLE_IMAGE_MODEL?.trim() || DEFAULT_MODEL;
+  const response = await fetch(GATEWAY_URL, {
     method: "POST",
     headers: {
-      "x-goog-api-key": apiKey,
+      Authorization: `Bearer ${apiKey}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({
       model,
-      input: buildGeminiInput(body),
+      messages: [{ role: "user", content: buildContent(body) }],
+      modalities: ["image", "text"],
     }),
   });
 
-  const data = (await response.json()) as GeminiResponse;
+  const text = await response.text();
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Gateway returned non-JSON [${response.status}]: ${text.slice(0, 300)}`);
+  }
 
   if (!response.ok) {
-    throw new Error(data.error?.message ?? "Gemini render request failed.");
+    if (response.status === 429) throw new Error("Rate limit exceeded. Please try again shortly.");
+    if (response.status === 402) throw new Error("AI credits exhausted. Please add credits in your workspace.");
+    const msg = (data as { error?: { message?: string } }).error?.message ?? text;
+    throw new Error(`Render request failed [${response.status}]: ${msg}`);
   }
 
-  const image = extractGeneratedImage(data);
-
-  if (!image) {
-    throw new Error("Gemini did not return an image.");
-  }
-
+  const image = extractImage(data);
+  if (!image) throw new Error("Model did not return an image.");
   return image;
 };
 
@@ -237,31 +171,24 @@ export const Route = createFileRoute("/api/render")({
         responseJson({
           ok: true,
           endpoint: "/api/render",
-          provider: "gemini",
-          model: resolveModel(),
+          provider: "lovable-ai-gateway",
+          model: process.env.LOVABLE_IMAGE_MODEL?.trim() || DEFAULT_MODEL,
         }),
       POST: async ({ request }) => {
         try {
-          const apiKey = process.env.GEMINI_API_KEY;
-
+          const apiKey = process.env.LOVABLE_API_KEY;
           if (!apiKey) {
-            return responseJson({ error: "Missing GEMINI_API_KEY." }, { status: 500 });
+            return responseJson({ error: "Missing LOVABLE_API_KEY." }, { status: 500 });
           }
-
           const body = await readRenderBody(request);
-
           if (!body.prompt?.trim() || !body.baseImage?.trim()) {
             return responseJson({ error: "prompt and baseImage are required." }, { status: 400 });
           }
-
           const image = await generateRender(body, apiKey);
-
           return responseJson({ image });
         } catch (error) {
           return responseJson(
-            {
-              error: error instanceof Error ? error.message : "Render failed.",
-            },
+            { error: error instanceof Error ? error.message : "Render failed." },
             { status: 500 },
           );
         }
