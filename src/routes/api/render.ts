@@ -39,12 +39,12 @@ const STYLE_GUIDE: Record<string, string> = {
 };
 
 /**
- * Auxiliar para converter uma Data URL (base64) no formato esperado pelo SDK oficial do Gemini.
+ * Converte uma Data URL (base64) no formato inlineData estrito exigido pelo SDK oficial do Gemini.
  */
-function parseDataUrl(dataUrl: string) {
+function parseDataUrlToGeminiPart(dataUrl: string) {
   const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (!matches) {
-    throw new Error("Invalid Data URL format");
+    throw new Error("Invalid Data URL format. Expected 'data:<mimeType>;base64,<data>'");
   }
   return {
     inlineData: {
@@ -144,61 +144,5 @@ export const Route = createFileRoute("/api/render")({
         try {
           const ai = new GoogleGenAI({ apiKey });
 
-          // Construção da lista híbrida de conteúdos (Textos e Objetos inlineData de imagem)
-          const contents: any[] = [systemBlock];
-
-          // 1. Imagem Base (Obrigatória)
-          contents.push(parseDataUrl(baseImage));
-
-          // 2. Imagens de Referência
-          for (const url of references) {
-            contents.push(parseDataUrl(url));
-          }
-
-          // 3. Histórico de Imagens Prévias (Máximo 3)
-          const activeHistoryImages = history
-            .filter((h) => h.image)
-            .slice(-3);
-
-          for (const h of activeHistoryImages) {
-            contents.push(parseDataUrl(h.image!));
-          }
-
-          // Chamada oficial à API do Gemini configurada para output multimodal
-          const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: contents,
-            config: {
-              // Solicita explicitamente o retorno em formato de imagem
-              responseMimeType: "image/jpeg",
-            }
-          });
-
-          // O SDK disponibiliza os arquivos gerados através de metadados ou candidatos candidatos do bloco
-          const candidate = response.candidates?.[0];
-          const part = candidate?.content?.parts?.[0];
-
-          // Verifica se o modelo retornou dados inline de imagem
-          if (part && "inlineData" in part && part.inlineData?.data) {
-            const mimeType = part.inlineData.mimeType || "image/jpeg";
-            const base64Data = part.inlineData.data;
-            const generatedImageUrl = `data:${mimeType};base64,${base64Data}`;
-            
-            return Response.json({ image: generatedImageUrl });
-          }
-
-          return Response.json(
-            { error: "No image returned from the Gemini model", raw: response },
-            { status: 502 }
-          );
-
-        } catch (error: any) {
-          return Response.json(
-            { error: `Gemini API error: ${error.message || error}` },
-            { status: 500 }
-          );
-        }
-      },
-    },
-  },
-});
+          // Array de conteúdos contendo as strings de instruções e os blocos inlineData estruturados
+          const contents:
