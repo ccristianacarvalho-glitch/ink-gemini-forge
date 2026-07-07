@@ -19,7 +19,7 @@ type RenderBody = {
 };
 
 const GATEWAY_URL = "https://ai.gateway.lovable.dev/v1/chat/completions";
-const DEFAULT_MODEL = "google/gemini-3-pro-image";
+const DEFAULT_MODEL = "google/gemini-3.1-flash-image";
 const MAX_REFERENCE_IMAGES = 6;
 const MAX_HISTORY_IMAGES = 4;
 
