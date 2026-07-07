@@ -194,3 +194,11 @@ export const Route = createFileRoute("/api/render")({
 
         } catch (error: any) {
           return Response.json(
+            { error: `Gemini API error: ${error.message || error}` },
+            { status: 500 }
+          );
+        }
+      },
+    },
+  },
+});
