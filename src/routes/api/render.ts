@@ -49,7 +49,7 @@ type GeminiResponse = {
 };
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
-const DEFAULT_MODEL = "gemini-2.5-flash-image-preview";
+const DEFAULT_MODEL = "gemini-2.5-flash-image";
 const MAX_REFERENCE_IMAGES = 6;
 const MAX_HISTORY_IMAGES = 4;
 
