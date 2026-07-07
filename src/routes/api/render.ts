@@ -1,11 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { GoogleGenAI } from "@google/genai";
 
 type HistoryTurn = {
   prompt?: string;
   instructions?: string;
   style?: string;
-  image?: string; // previous rendered image (data URL)
+  image?: string;
 };
 
 type RenderBody = {
@@ -14,10 +13,45 @@ type RenderBody = {
   annotationBrief?: string;
   fullPrompt?: string;
   style?: string;
-  baseImage: string; // data URL of base + overlay composite
-  references?: string[]; // additional data URLs
-  history?: HistoryTurn[]; // previous turns for iterative learning
+  baseImage: string;
+  references?: string[];
+  history?: HistoryTurn[];
 };
+
+type GeminiInlinePart = {
+  inlineData: {
+    mimeType: string;
+    data: string;
+  };
+};
+
+type GeminiTextPart = {
+  text: string;
+};
+
+type GeminiPart = GeminiTextPart | GeminiInlinePart;
+
+type GeminiResponse = {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+        inlineData?: {
+          mimeType?: string;
+          data?: string;
+        };
+      }>;
+    };
+  }>;
+  error?: {
+    message?: string;
+  };
+};
+
+const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+const DEFAULT_MODEL = "gemini-2.5-flash-image-preview";
+const MAX_REFERENCE_IMAGES = 6;
+const MAX_HISTORY_IMAGES = 4;
 
 const STYLE_GUIDE: Record<string, string> = {
   photorealistic:
@@ -38,111 +72,185 @@ const STYLE_GUIDE: Record<string, string> = {
     "Semi-realistic 3D visualization, clean geometry, soft studio lighting, subtle materials, presentation quality.",
 };
 
-/**
- * Converte uma Data URL (base64) no formato inlineData estrito exigido pelo SDK oficial do Gemini.
- */
-function parseDataUrlToGeminiPart(dataUrl: string) {
-  const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-  if (!matches) {
-    throw new Error("Invalid Data URL format. Expected 'data:<mimeType>;base64,<data>'");
+const responseJson = (body: unknown, init?: ResponseInit): Response =>
+  new Response(JSON.stringify(body), {
+    ...init,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...init?.headers,
+    },
+  });
+
+const parseDataUrl = (dataUrl: string): GeminiInlinePart => {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+
+  if (!match) {
+    throw new Error("Invalid image data URL. Expected data:<mime>;base64,<data>.");
   }
+
   return {
     inlineData: {
-      mimeType: matches[1],
-      data: matches[2],
+      mimeType: match[1],
+      data: match[2],
     },
   };
-}
+};
+
+const readRenderBody = async (request: Request): Promise<RenderBody> => {
+  try {
+    return (await request.json()) as RenderBody;
+  } catch {
+    throw new Error("Invalid JSON body.");
+  }
+};
+
+const buildPrompt = (body: RenderBody): string => {
+  const {
+    prompt,
+    instructions = "",
+    annotationBrief = "",
+    fullPrompt = "",
+    style,
+    history = [],
+  } = body;
+  const styleText = style && STYLE_GUIDE[style] ? STYLE_GUIDE[style] : "";
+  const historyText =
+    history.length > 0
+      ? "\n\nITERATION CONTEXT - previous turns in this session, in order. " +
+        "Learn from recurring preferences, preserve subject continuity, and keep refining:\n" +
+        history
+          .slice(-MAX_HISTORY_IMAGES)
+          .map(
+            (turn, index) =>
+              `#${index + 1} style=${turn.style ?? "-"} prompt="${(turn.prompt ?? "").slice(0, 300)}"` +
+              (turn.instructions ? ` instructions="${turn.instructions.slice(0, 300)}"` : ""),
+          )
+          .join("\n")
+      : "";
+
+  return (
+    `You are a premium architectural, interior and product visualization renderer. ` +
+    `Deliver one photorealistic, magazine-grade re-render with cinematic lighting, physically based materials, realistic global illumination, accurate reflections, depth and atmosphere.\n\n` +
+    `GEOMETRY LOCK\n` +
+    `The first image defines the scene structure. Preserve camera position, focal length, perspective, vanishing points, framing, silhouettes, contours, edges, proportions, object positions, scale, alignment, horizon line, floor plane and wall planes. Do not invent, move, resize, rotate, add or remove geometry.\n\n` +
+    `QUALITY LOCK\n` +
+    `The geometry lock constrains shape and layout only. Upgrade the image to premium photorealism regardless of whether the base is a sketch, flat photo, low-quality snapshot or schematic drawing. Do not mimic low fidelity from the base image.\n\n` +
+    `ANNOTATIONS\n` +
+    `The first image may include drawn annotations. Use them only as location markers for requested changes, then remove all visible annotation marks from the final image.\n\n` +
+    `REFERENCES\n` +
+    `Images after the first are style, material, lighting, mood and palette references only. Never copy their geometry, composition or layout. Previous render images are iteration references, but the base image geometry still wins.\n\n` +
+    `Return a single final image only.` +
+    (styleText ? `\n\nSTYLE DIRECTIVE: ${styleText}` : "") +
+    historyText +
+    (annotationBrief ? `\n\nANNOTATION BRIEF:\n${annotationBrief}` : "") +
+    (instructions ? `\n\nUSER INSTRUCTIONS:\n${instructions}` : "") +
+    `\n\nUSER PROMPT:\n${prompt}` +
+    (fullPrompt && fullPrompt !== prompt ? `\n\nCOMBINED CONTEXT:\n${fullPrompt}` : "")
+  );
+};
+
+const buildGeminiParts = (body: RenderBody): GeminiPart[] => {
+  const parts: GeminiPart[] = [
+    { text: buildPrompt(body) },
+    parseDataUrl(body.baseImage),
+  ];
+
+  for (const reference of (body.references ?? []).slice(0, MAX_REFERENCE_IMAGES)) {
+    parts.push(parseDataUrl(reference));
+  }
+
+  for (const turn of (body.history ?? []).slice(-MAX_HISTORY_IMAGES)) {
+    if (turn.image) {
+      parts.push(parseDataUrl(turn.image));
+    }
+  }
+
+  return parts;
+};
+
+const extractGeneratedImage = (data: GeminiResponse): string | null => {
+  for (const candidate of data.candidates ?? []) {
+    for (const part of candidate.content?.parts ?? []) {
+      if (part.inlineData?.mimeType && part.inlineData.data) {
+        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+      }
+    }
+  }
+
+  return null;
+};
+
+const generateRender = async (body: RenderBody, apiKey: string): Promise<string> => {
+  const model = process.env.GEMINI_MODEL ?? DEFAULT_MODEL;
+  const endpoint = `${GEMINI_API_BASE}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: buildGeminiParts(body),
+        },
+      ],
+      generationConfig: {
+        responseModalities: ["IMAGE"],
+      },
+    }),
+  });
+
+  const data = (await response.json()) as GeminiResponse;
+
+  if (!response.ok) {
+    throw new Error(data.error?.message ?? "Gemini render request failed.");
+  }
+
+  const image = extractGeneratedImage(data);
+
+  if (!image) {
+    throw new Error("Gemini did not return an image.");
+  }
+
+  return image;
+};
 
 export const Route = createFileRoute("/api/render")({
   server: {
     handlers: {
+      GET: async () =>
+        responseJson({
+          ok: true,
+          endpoint: "/api/render",
+          provider: "gemini",
+        }),
       POST: async ({ request }) => {
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey) {
-          return Response.json({ error: "Missing GEMINI_API_KEY" }, { status: 500 });
-        }
-
-        let body: RenderBody;
         try {
-          body = (await request.json()) as RenderBody;
-        } catch {
-          return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+          const apiKey = process.env.GEMINI_API_KEY;
+
+          if (!apiKey) {
+            return responseJson({ error: "Missing GEMINI_API_KEY." }, { status: 500 });
+          }
+
+          const body = await readRenderBody(request);
+
+          if (!body.prompt?.trim() || !body.baseImage?.trim()) {
+            return responseJson({ error: "prompt and baseImage are required." }, { status: 400 });
+          }
+
+          const image = await generateRender(body, apiKey);
+
+          return responseJson({ image });
+        } catch (error) {
+          return responseJson(
+            {
+              error: error instanceof Error ? error.message : "Render failed.",
+            },
+            { status: 500 },
+          );
         }
-
-        const {
-          prompt,
-          instructions: userInstructions = "",
-          annotationBrief = "",
-          fullPrompt = "",
-          style,
-          baseImage,
-          references = [],
-          history = [],
-        } = body;
-
-        if (!prompt || !baseImage) {
-          return Response.json({ error: "prompt and baseImage are required" }, { status: 400 });
-        }
-
-        const styleText = style && STYLE_GUIDE[style] ? STYLE_GUIDE[style] : "";
-
-        // Build iterative context from history (learn from prior turns)
-        const historyText =
-          history.length > 0
-            ? "\n\nITERATION CONTEXT — previous turns in this session (in order). " +
-              "Learn from what the user has been asking, keep consistency of subject, materials and mood, " +
-              "notice recurring instructions and preferences, and refine further:\n" +
-              history
-                .map(
-                  (h, i) =>
-                    `#${i + 1} style=${h.style ?? "-"} · prompt="${(h.prompt ?? "").slice(0, 300)}"` +
-                    (h.instructions ? ` · instructions="${h.instructions.slice(0, 300)}"` : ""),
-                )
-                .join("\n")
-            : "";
-
-        const systemBlock =
-          `You are a premium architectural, interior and product visualization renderer. ` +
-          `Your job is to deliver a FULLY photorealistic, premium magazine-grade re-render — ` +
-          `cinematic lighting, physically based materials, realistic global illumination, ` +
-          `accurate reflections, depth and atmosphere. Render quality must always be top tier.\n\n` +
-          `=== GEOMETRY LOCK (STRUCTURE ONLY) ===\n` +
-          `The FIRST image defines the STRUCTURE of the scene. Preserve exactly:\n` +
-          `- camera position, focal length, perspective, vanishing points and framing\n` +
-          `- silhouettes, contours, edges and proportions of every object, wall, window, opening and structural element\n` +
-          `- position, scale and alignment of every element already present\n` +
-          `- horizon line, floor plane and wall planes\n` +
-          `Do NOT invent, move, resize, rotate, add or remove geometry. Do NOT redesign the layout.\n\n` +
-          `IMPORTANT: the geometry lock constrains SHAPE and LAYOUT only. It does NOT constrain ` +
-          `render quality, materials, textures, lighting, shadows, reflections, color grading, ` +
-          `atmosphere, depth of field or post-processing. Even if the base image looks like a rough ` +
-          `sketch, a flat photo, a low-quality snapshot or a schematic drawing, you MUST upgrade it ` +
-          `to a full premium photorealistic render while keeping the same geometry. Never mimic the ` +
-          `base image's rendering style, resolution or fidelity — always push to premium photorealism.\n\n` +
-          `=== ANNOTATIONS (WHERE) ===\n` +
-          `The base image includes the user's annotations drawn on top (pen lines, arrows, highlights, text, rectangles). ` +
-          `Each annotation marks WHERE to apply a change. Outside annotated regions, keep the geometry identical to the base ` +
-          `but still rendered at full premium photorealistic quality. Remove the visible annotation marks from the final output.\n\n` +
-          `=== USER INSTRUCTIONS (HOW) ===\n` +
-          `The user instructions describe HOW to modify the annotated regions. Apply them within those regions, respecting the geometry lock.\n\n` +
-          `=== REFERENCES ===\n` +
-          `Any images after the first are STYLE references only (materials, lighting, mood, palette). ` +
-          `NEVER copy their geometry, composition or layout. Any PREVIOUS RENDER images are prior iterations — ` +
-          `keep their intent and continue refining, but the base image geometry still wins.\n\n` +
-          `Output ONE single photorealistic, premium re-render: same geometry as the base, ` +
-          `maximum render quality, with the requested material / lighting / annotated changes applied.` +
-          (styleText ? `\n\nSTYLE DIRECTIVE (materials/lighting/mood, NOT geometry): ${styleText}` : "") +
-          historyText +
-          (annotationBrief ? `\n\n${annotationBrief}` : "") +
-          (userInstructions
-            ? `\n\nUSER INSTRUCTIONS (HOW to apply the annotations):\n${userInstructions}`
-            : "") +
-          `\n\nUSER PROMPT: ${prompt}` +
-          (fullPrompt && fullPrompt !== prompt ? `\n\nCOMBINED CONTEXT:\n${fullPrompt}` : "");
-
-        try {
-          const ai = new GoogleGenAI({ apiKey });
-
-          // Array de conteúdos contendo as strings de instruções e os blocos inlineData estruturados
-          const contents:
+      },
+    },
+  },
+});
