@@ -18,20 +18,24 @@ type RenderBody = {
   history?: HistoryTurn[];
 };
 
-type GeminiInlinePart = {
-  inlineData: {
-    mimeType: string;
-    data: string;
-  };
+type GeminiImageInput = {
+  type: "image";
+  mime_type: string;
+  data: string;
 };
 
-type GeminiTextPart = {
+type GeminiTextInput = {
+  type: "text";
   text: string;
 };
 
-type GeminiPart = GeminiTextPart | GeminiInlinePart;
+type GeminiInput = GeminiTextInput | GeminiImageInput;
 
 type GeminiResponse = {
+  output_image?: {
+    mime_type?: string;
+    data?: string;
+  };
   candidates?: Array<{
     content?: {
       parts?: Array<{
@@ -48,10 +52,26 @@ type GeminiResponse = {
   };
 };
 
-const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
-const DEFAULT_MODEL = "gemini-2.5-flash-image";
+const GEMINI_INTERACTIONS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions";
+const DEFAULT_MODEL = "gemini-3.1-flash-lite-image";
 const MAX_REFERENCE_IMAGES = 6;
 const MAX_HISTORY_IMAGES = 4;
+const SUPPORTED_IMAGE_MODELS = new Set([
+  "gemini-3.1-flash-lite-image",
+  "gemini-3.1-flash-image",
+  "gemini-3-pro-image",
+  "gemini-2.5-flash-image",
+]);
+
+const resolveModel = (): string => {
+  const configuredModel = process.env.GEMINI_MODEL?.trim();
+
+  if (configuredModel && SUPPORTED_IMAGE_MODELS.has(configuredModel)) {
+    return configuredModel;
+  }
+
+  return DEFAULT_MODEL;
+};
 
 const STYLE_GUIDE: Record<string, string> = {
   photorealistic:
@@ -81,7 +101,7 @@ const responseJson = (body: unknown, init?: ResponseInit): Response =>
     },
   });
 
-const parseDataUrl = (dataUrl: string): GeminiInlinePart => {
+const parseDataUrl = (dataUrl: string): GeminiImageInput => {
   const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
 
   if (!match) {
@@ -89,10 +109,9 @@ const parseDataUrl = (dataUrl: string): GeminiInlinePart => {
   }
 
   return {
-    inlineData: {
-      mimeType: match[1],
-      data: match[2],
-    },
+    type: "image",
+    mime_type: match[1],
+    data: match[2],
   };
 };
 
@@ -149,26 +168,30 @@ const buildPrompt = (body: RenderBody): string => {
   );
 };
 
-const buildGeminiParts = (body: RenderBody): GeminiPart[] => {
-  const parts: GeminiPart[] = [
-    { text: buildPrompt(body) },
+const buildGeminiInput = (body: RenderBody): GeminiInput[] => {
+  const input: GeminiInput[] = [
+    { type: "text", text: buildPrompt(body) },
     parseDataUrl(body.baseImage),
   ];
 
   for (const reference of (body.references ?? []).slice(0, MAX_REFERENCE_IMAGES)) {
-    parts.push(parseDataUrl(reference));
+    input.push(parseDataUrl(reference));
   }
 
   for (const turn of (body.history ?? []).slice(-MAX_HISTORY_IMAGES)) {
     if (turn.image) {
-      parts.push(parseDataUrl(turn.image));
+      input.push(parseDataUrl(turn.image));
     }
   }
 
-  return parts;
+  return input;
 };
 
 const extractGeneratedImage = (data: GeminiResponse): string | null => {
+  if (data.output_image?.data) {
+    return `data:${data.output_image.mime_type ?? "image/png"};base64,${data.output_image.data}`;
+  }
+
   for (const candidate of data.candidates ?? []) {
     for (const part of candidate.content?.parts ?? []) {
       if (part.inlineData?.mimeType && part.inlineData.data) {
@@ -181,23 +204,16 @@ const extractGeneratedImage = (data: GeminiResponse): string | null => {
 };
 
 const generateRender = async (body: RenderBody, apiKey: string): Promise<string> => {
-  const model = process.env.GEMINI_MODEL ?? DEFAULT_MODEL;
-  const endpoint = `${GEMINI_API_BASE}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const response = await fetch(endpoint, {
+  const model = resolveModel();
+  const response = await fetch(GEMINI_INTERACTIONS_ENDPOINT, {
     method: "POST",
     headers: {
+      "x-goog-api-key": apiKey,
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      contents: [
-        {
-          role: "user",
-          parts: buildGeminiParts(body),
-        },
-      ],
-      generationConfig: {
-        responseModalities: ["IMAGE"],
-      },
+      model,
+      input: buildGeminiInput(body),
     }),
   });
 
@@ -224,6 +240,7 @@ export const Route = createFileRoute("/api/render")({
           ok: true,
           endpoint: "/api/render",
           provider: "gemini",
+          model: resolveModel(),
         }),
       POST: async ({ request }) => {
         try {
