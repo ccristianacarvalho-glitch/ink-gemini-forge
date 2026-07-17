@@ -60,7 +60,14 @@ const readRenderBody = async (request: Request): Promise<RenderBody> => {
 };
 
 const buildPromptText = (body: RenderBody): string => {
-  const { prompt, instructions = "", annotationBrief = "", fullPrompt = "", style, history = [] } = body;
+  const {
+    prompt,
+    instructions = "",
+    annotationBrief = "",
+    fullPrompt = "",
+    style,
+    history = [],
+  } = body;
   const styleText = style && STYLE_GUIDE[style] ? STYLE_GUIDE[style] : "";
   const historyText =
     history.length > 0
@@ -97,8 +104,7 @@ const buildPromptText = (body: RenderBody): string => {
 };
 
 type ContentPart =
-  | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
 const buildContent = (body: RenderBody): ContentPart[] => {
   const parts: ContentPart[] = [
@@ -154,7 +160,8 @@ const generateRender = async (body: RenderBody, apiKey: string): Promise<string>
 
   if (!response.ok) {
     if (response.status === 429) throw new Error("Rate limit exceeded. Please try again shortly.");
-    if (response.status === 402) throw new Error("AI credits exhausted. Please add credits in your workspace.");
+    if (response.status === 402)
+      throw new Error("AI credits exhausted. Please add credits in your workspace.");
     const msg = (data as { error?: { message?: string } }).error?.message ?? text;
     throw new Error(`Render request failed [${response.status}]: ${msg}`);
   }

@@ -1,19 +1,21 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { AnnotationCanvas } from "@/components/AnnotationCanvas";
+
+import { ArchVizStudioApp } from "@/features/studio/ArchVizStudioApp";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Render Studio — Annotation Canvas" },
+      { title: "ArchViz AI Studio" },
       {
         name: "description",
         content:
-          "Premium GoodNotes-style annotation canvas with pen, highlighter, eraser, text, arrow and rectangle tools.",
+          "Professional AI render studio for architectural visualization and interior design.",
       },
-      { property: "og:title", content: "Render Studio — Annotation Canvas" },
+      { property: "og:title", content: "ArchViz AI Studio" },
       {
         property: "og:description",
-        content: "Annotate images with a precise, high-contrast Swiss-styled canvas.",
+        content:
+          "Project-based ArchViz rendering, prompt generation, version history and before-after review.",
       },
     ],
   }),
@@ -21,5 +23,5 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  return <AnnotationCanvas />;
+  return <ArchVizStudioApp />;
 }
